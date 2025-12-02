@@ -59,8 +59,15 @@ def get_empty_html():
   """
   return block_template
 
-def get_block_html(title:str, authors:str, rate:str,arxiv_id:str, abstract:str, pdf_url:str, code_url:str=None, affiliations:str=None):
+def get_block_html(title:str, authors:str, rate:str,arxiv_id:str, abstract:str, pdf_url:str, code_url:str=None, affiliations:str=None, tags:list[str]=None):
     code = f'<a href="{code_url}" style="display: inline-block; text-decoration: none; font-size: 14px; font-weight: bold; color: #fff; background-color: #5bc0de; padding: 8px 16px; border-radius: 4px; margin-left: 8px;">Code</a>' if code_url else ''
+
+    # 生成tags的HTML（badge样式）
+    tags_html = ''
+    if tags:
+        tag_badges = [f'<span style="display: inline-block; background-color: #f0f0f0; color: #333; padding: 4px 10px; border-radius: 12px; font-size: 12px; margin-right: 6px; margin-top: 4px;">{tag}</span>' for tag in tags]
+        tags_html = ''.join(tag_badges)
+
     block_template = """
     <table border="0" cellpadding="0" cellspacing="0" width="100%" style="font-family: Arial, sans-serif; border: 1px solid #ddd; border-radius: 8px; padding: 16px; background-color: #f9f9f9;">
     <tr>
@@ -86,6 +93,12 @@ def get_block_html(title:str, authors:str, rate:str,arxiv_id:str, abstract:str, 
         </td>
     </tr>
     <tr>
+        <td style="font-size: 14px; color: #333; padding: 4px 0;">
+            <strong>Tags:</strong><br>
+            <div style="margin-top: 4px;">{tags}</div>
+        </td>
+    </tr>
+    <tr>
         <td style="font-size: 14px; color: #333; padding: 8px 0;">
             <strong>TLDR:</strong> {abstract}
         </td>
@@ -99,7 +112,7 @@ def get_block_html(title:str, authors:str, rate:str,arxiv_id:str, abstract:str, 
     </tr>
 </table>
 """
-    return block_template.format(title=title, authors=authors,rate=rate,arxiv_id=arxiv_id, abstract=abstract, pdf_url=pdf_url, code=code, affiliations=affiliations)
+    return block_template.format(title=title, authors=authors,rate=rate,arxiv_id=arxiv_id, abstract=abstract, pdf_url=pdf_url, code=code, affiliations=affiliations, tags=tags_html)
 
 def get_stars(score:float):
     full_star = '<span class="full-star">⭐</span>'
@@ -142,7 +155,8 @@ def render_email(papers:list[ArxivPaper]):
         #     affiliations = 'Unknown Affiliation'
         affiliations = 'Unknown Affiliation'  # 临时跳过 LLM 提取
         code_url = p.code_url  # 从 abstract 中提取代码链接（GitHub/Hugging Face）
-        parts.append(get_block_html(p.title, authors,rate,p.arxiv_id ,p.tldr, p.pdf_url, code_url, affiliations))
+        tags = p.tags  # 从论文中提取关键技术词汇作为标签
+        parts.append(get_block_html(p.title, authors,rate,p.arxiv_id ,p.tldr, p.pdf_url, code_url, affiliations, tags))
         time.sleep(2)  # 临时改为 2 秒，加速测试（原来是 10 秒）
 
     content = '<br>' + '</br><br>'.join(parts) + '</br>'
