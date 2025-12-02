@@ -132,15 +132,18 @@ def render_email(papers:list[ArxivPaper]):
             authors = ', '.join(author_list)
         else:
             authors = ', '.join(author_list[:3] + ['...'] + author_list[-2:])
-        if p.affiliations is not None:
-            affiliations = p.affiliations[:5]
-            affiliations = ', '.join(affiliations)
-            if len(p.affiliations) > 5:
-                affiliations += ', ...'
-        else:
-            affiliations = 'Unknown Affiliation'
-        parts.append(get_block_html(p.title, authors,rate,p.arxiv_id ,p.tldr, p.pdf_url, p.code_url, affiliations))
-        time.sleep(10)
+        # 临时注释掉 affiliations 以加速测试
+        # if p.affiliations is not None:
+        #     affiliations = p.affiliations[:5]
+        #     affiliations = ', '.join(affiliations)
+        #     if len(p.affiliations) > 5:
+        #         affiliations += ', ...'
+        # else:
+        #     affiliations = 'Unknown Affiliation'
+        affiliations = 'Unknown Affiliation'  # 临时跳过 LLM 提取
+        code_url = None  # 临时跳过 code_url 查询，避免网络超时
+        parts.append(get_block_html(p.title, authors,rate,p.arxiv_id ,p.tldr, p.pdf_url, code_url, affiliations))
+        time.sleep(2)  # 临时改为 2 秒，加速测试（原来是 10 秒）
 
     content = '<br>' + '</br><br>'.join(parts) + '</br>'
     return framework.replace('__CONTENT__', content)
@@ -156,13 +159,19 @@ def send_email(sender:str, receiver:str, password:str,smtp_server:str,smtp_port:
     today = datetime.datetime.now().strftime('%Y/%m/%d')
     msg['Subject'] = Header(f'Daily arXiv {today}', 'utf-8').encode()
 
-    try:
-        server = smtplib.SMTP(smtp_server, smtp_port)
-        server.starttls()
-    except Exception as e:
-        logger.warning(f"Failed to use TLS. {e}")
-        logger.warning(f"Try to use SSL.")
-        server = smtplib.SMTP_SSL(smtp_server, smtp_port)
+    # 根据端口自动选择 SSL 或 TLS
+    if smtp_port == 465:
+        logger.debug("Using SMTP_SSL for port 465")
+        server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30)
+    else:
+        logger.debug("Using SMTP with STARTTLS for other ports")
+        try:
+            server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
+            server.starttls()
+        except Exception as e:
+            logger.warning(f"Failed to use TLS: {e}")
+            logger.warning("Trying SSL fallback...")
+            server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30)
 
     server.login(sender, password)
     server.sendmail(sender, [receiver], msg.as_string())

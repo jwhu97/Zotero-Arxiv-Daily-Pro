@@ -1,3 +1,7 @@
+import os
+# 👇 必须放在第一行，甚至在 import sys 或其他库之前
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
 import arxiv
 
 def _get_pdf_url_patch(links) -> str:
