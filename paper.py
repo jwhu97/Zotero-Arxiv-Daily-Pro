@@ -53,11 +53,12 @@ class ArxivPaper:
     def _extract_code_url_from_text(self, text: str, source: str = "text") -> Optional[str]:
         r"""
         从文本中提取代码链接 (GitHub 或 Hugging Face)
-        优先级: GitHub 仓库 > GitHub Pages > Hugging Face
+        优先级: GitHub 仓库 > GitHub Pages > Hugging Face > 项目主页
 
         策略：
-        1. 优先提取 LaTeX 结构化命令 \url{} 和 \href{} 中的链接（更可靠）
-        2. 如果没找到，再使用通用正则匹配（兜底）
+        1. 优先提取 LaTeX 结构化命令 \url{} 和 \href{} 中的 GitHub/HF 链接
+        2. 使用通用正则匹配 GitHub/HF 链接
+        3. 查找带有 "open-source"/"code"/"implementation" 等关键词的项目主页链接（兜底）
         """
         # 定义 GitHub/Hugging Face 的匹配模式
         code_platforms = [
@@ -69,25 +70,21 @@ class ArxivPaper:
             (r'huggingface\.co/[\w\-\.]+/[\w\-\.]+', 'Hugging Face'),
         ]
 
-        # 策略 1: 优先从 LaTeX 结构化命令中提取
-        # 提取 \url{...} 和 \href{url}{text} 中的 URL
+        # 策略 1: 优先从 LaTeX 结构化命令中提取 GitHub/HF 链接
         structured_urls = []
         structured_urls.extend(re.findall(r'\\url\{([^}]+)\}', text, re.IGNORECASE))
         structured_urls.extend(re.findall(r'\\href\{([^}]+)\}', text, re.IGNORECASE))
 
-        # 对每个结构化 URL 进行平台匹配
         for url in structured_urls:
             for pattern, platform in code_platforms:
                 if re.search(pattern, url, re.IGNORECASE):
-                    # 标准化 URL（确保有协议前缀）
                     if not url.startswith('http'):
                         url = 'https://' + url
-                    # 移除末尾的标点符号
                     url = re.sub(r'[.,;:)\]}]+$', '', url)
                     logger.debug(f"Found code URL in {source} (from LaTeX command) for {self.arxiv_id}: {url}")
                     return url
 
-        # 策略 2: 如果结构化命令中没找到，使用通用正则（兜底）
+        # 策略 2: 通用正则匹配 GitHub/HF 链接（兜底）
         general_patterns = [
             r'https?://github\.com/[\w\-\.]+/[\w\-\.]+',
             r'https?://[\w\-\.]+\.github\.io(?:/[\w\-\.]+)?',
@@ -100,6 +97,26 @@ class ArxivPaper:
                 url = matches[0]
                 url = re.sub(r'[.,;:)\]}]+$', '', url)
                 logger.debug(f"Found code URL in {source} (from general regex) for {self.arxiv_id}: {url}")
+                return url
+
+        # 策略 3: 查找带有代码相关关键词的项目主页链接
+        # 关键词: open-source, code, implementation, available at, project page
+        code_keywords = [
+            r'open-source\s+(?:code|implementation)',  # "open-source implementation"
+            r'(?:code|implementation)\s+(?:is\s+)?available',  # "code available"
+            r'project\s+page',  # "project page"
+            r'(?:code|implementation)\s+at',  # "code at"
+        ]
+
+        # 在关键词附近查找 URL
+        for keyword in code_keywords:
+            # 查找关键词后面 100 个字符内的 URL
+            pattern = keyword + r'.{0,100}?(https?://[^\s\)}\]]+)'
+            matches = re.findall(pattern, text, re.IGNORECASE | re.DOTALL)
+            if matches:
+                url = matches[0]
+                url = re.sub(r'[.,;:)\]}]+$', '', url)  # 移除末尾标点
+                logger.debug(f"Found project page in {source} (with keyword '{keyword}') for {self.arxiv_id}: {url}")
                 return url
 
         return None
