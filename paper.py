@@ -49,30 +49,86 @@ class ArxivPaper:
         self._paper.pdf_url = pdf_url
 
         return pdf_url
-    
+
+    def _extract_code_url_from_text(self, text: str, source: str = "text") -> Optional[str]:
+        r"""
+        从文本中提取代码链接 (GitHub 或 Hugging Face)
+        优先级: GitHub 仓库 > GitHub Pages > Hugging Face
+
+        策略：
+        1. 优先提取 LaTeX 结构化命令 \url{} 和 \href{} 中的链接（更可靠）
+        2. 如果没找到，再使用通用正则匹配（兜底）
+        """
+        # 定义 GitHub/Hugging Face 的匹配模式
+        code_platforms = [
+            # GitHub repository patterns (优先匹配)
+            (r'github\.com/[\w\-\.]+/[\w\-\.]+', 'GitHub repo'),
+            # GitHub Pages patterns
+            (r'[\w\-\.]+\.github\.io(?:/[\w\-\.]+)?', 'GitHub Pages'),
+            # Hugging Face patterns
+            (r'huggingface\.co/[\w\-\.]+/[\w\-\.]+', 'Hugging Face'),
+        ]
+
+        # 策略 1: 优先从 LaTeX 结构化命令中提取
+        # 提取 \url{...} 和 \href{url}{text} 中的 URL
+        structured_urls = []
+        structured_urls.extend(re.findall(r'\\url\{([^}]+)\}', text, re.IGNORECASE))
+        structured_urls.extend(re.findall(r'\\href\{([^}]+)\}', text, re.IGNORECASE))
+
+        # 对每个结构化 URL 进行平台匹配
+        for url in structured_urls:
+            for pattern, platform in code_platforms:
+                if re.search(pattern, url, re.IGNORECASE):
+                    # 标准化 URL（确保有协议前缀）
+                    if not url.startswith('http'):
+                        url = 'https://' + url
+                    # 移除末尾的标点符号
+                    url = re.sub(r'[.,;:)\]}]+$', '', url)
+                    logger.debug(f"Found code URL in {source} (from LaTeX command) for {self.arxiv_id}: {url}")
+                    return url
+
+        # 策略 2: 如果结构化命令中没找到，使用通用正则（兜底）
+        general_patterns = [
+            r'https?://github\.com/[\w\-\.]+/[\w\-\.]+',
+            r'https?://[\w\-\.]+\.github\.io(?:/[\w\-\.]+)?',
+            r'https?://huggingface\.co/[\w\-\.]+/[\w\-\.]+',
+        ]
+
+        for pattern in general_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches:
+                url = matches[0]
+                url = re.sub(r'[.,;:)\]}]+$', '', url)
+                logger.debug(f"Found code URL in {source} (from general regex) for {self.arxiv_id}: {url}")
+                return url
+
+        return None
+
     @cached_property
     def code_url(self) -> Optional[str]:
-        s = requests.Session()
-        retries = Retry(total=5, backoff_factor=0.1)
-        s.mount('https://', HTTPAdapter(max_retries=retries))
-        try:
-            paper_list = s.get(f'https://paperswithcode.com/api/v1/papers/?arxiv_id={self.arxiv_id}').json()
-        except Exception as e:
-            logger.debug(f'Error when searching {self.arxiv_id}: {e}')
-            return None
+        # 1. 优先从 abstract 中提取
+        url = self._extract_code_url_from_text(self.summary, "abstract")
+        if url:
+            return url
 
-        if paper_list.get('count',0) == 0:
-            return None
-        paper_id = paper_list['results'][0]['id']
+        # 2. 如果 abstract 中没有，尝试从 LaTeX 源码的前面部分提取
+        if self.tex is not None:
+            content = self.tex.get("all")
+            if content is None:
+                content = "\n".join(self.tex.values())
 
-        try:
-            repo_list = s.get(f'https://paperswithcode.com/api/v1/papers/{paper_id}/repositories/').json()
-        except Exception as e:
-            logger.debug(f'Error when searching {self.arxiv_id}: {e}')
-            return None
-        if repo_list.get('count',0) == 0:
-            return None
-        return repo_list['results'][0]['url']
+            # 简化策略：直接搜索文档前面 8000 字符
+            # 这通常覆盖 preamble、title、author、abstract、introduction 开头
+            # 足够找到第一页的代码链接
+            front_text = content[:8000]
+            logger.debug(f"Searching in LaTeX front matter ({len(front_text)} chars) for {self.arxiv_id}")
+            url = self._extract_code_url_from_text(front_text, "LaTeX front matter")
+            if url:
+                return url
+
+        # 3. 如果都没有找到，返回 None
+        logger.debug(f"No code URL found for {self.arxiv_id}")
+        return None
     
     @cached_property
     def tex(self) -> dict[str,str]:

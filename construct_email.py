@@ -141,7 +141,7 @@ def render_email(papers:list[ArxivPaper]):
         # else:
         #     affiliations = 'Unknown Affiliation'
         affiliations = 'Unknown Affiliation'  # 临时跳过 LLM 提取
-        code_url = None  # 临时跳过 code_url 查询，避免网络超时
+        code_url = p.code_url  # 从 abstract 中提取代码链接（GitHub/Hugging Face）
         parts.append(get_block_html(p.title, authors,rate,p.arxiv_id ,p.tldr, p.pdf_url, code_url, affiliations))
         time.sleep(2)  # 临时改为 2 秒，加速测试（原来是 10 秒）
 

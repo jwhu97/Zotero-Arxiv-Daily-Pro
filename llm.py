@@ -31,7 +31,11 @@ class LLM:
                     logger.error(f"Attempt {attempt + 1} failed: {e}")
                     if attempt == max_retries - 1:
                         raise
-                    sleep(3)
+                    # 使用指数退避策略，特别是对于 429 错误
+                    # 第1次重试等待 5 秒，第2次等待 10 秒
+                    wait_time = 5 * (2 ** attempt)
+                    logger.info(f"Waiting {wait_time} seconds before retry...")
+                    sleep(wait_time)
             return response.choices[0].message.content
         else:
             response = self.llm.create_chat_completion(messages=messages,temperature=0)
