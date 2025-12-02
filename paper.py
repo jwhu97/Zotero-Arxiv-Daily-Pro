@@ -40,7 +40,7 @@ class ArxivPaper:
     def pdf_url(self) -> str:
         if self._paper.pdf_url is not None:
             return self._paper.pdf_url
-        
+
         pdf_url = f"https://arxiv.org/pdf/{self.arxiv_id}.pdf"
         if self._paper.links is not None:
             pdf_url = self._paper.links[0].href.replace('abs','pdf')
@@ -49,6 +49,20 @@ class ArxivPaper:
         self._paper.pdf_url = pdf_url
 
         return pdf_url
+
+    @property
+    def categories(self) -> list[str]:
+        """
+        获取论文的所有类别标签
+        """
+        return self._paper.categories
+
+    @property
+    def primary_category(self) -> str:
+        """
+        获取论文的主要类别标签
+        """
+        return self._paper.primary_category
 
     def _extract_code_url_from_text(self, text: str, source: str = "text") -> Optional[str]:
         r"""
@@ -257,7 +271,7 @@ class ArxivPaper:
                 conclusion = match.group(0)
         llm = get_llm()
         prompt = """Given the title, abstract, introduction and the conclusion (if any) of a paper in latex format, generate a one-sentence TLDR summary in __LANG__:
-        
+
         \\title{__TITLE__}
         \\begin{abstract}__ABSTRACT__\\end{abstract}
         __INTRODUCTION__
@@ -274,7 +288,7 @@ class ArxivPaper:
         prompt_tokens = enc.encode(prompt)
         prompt_tokens = prompt_tokens[:4000]  # truncate to 4000 tokens
         prompt = enc.decode(prompt_tokens)
-        
+
         tldr = llm.generate(
             messages=[
                 {
@@ -285,6 +299,64 @@ class ArxivPaper:
             ]
         )
         return tldr
+
+    @cached_property
+    def tags(self) -> list[str]:
+        """
+        从论文中提取关键技术词汇作为标签
+        """
+        llm = get_llm()
+
+        # 准备用于提取标签的内容（标题+摘要，如果有tex则加上introduction的前部分）
+        content_for_tags = f"Title: {self.title}\n\nAbstract: {self.summary}"
+
+        if self.tex is not None:
+            tex_content = self.tex.get("all")
+            if tex_content is None:
+                tex_content = "\n".join(self.tex.values())
+
+            # 提取introduction的前1000个字符
+            match = re.search(r'\\section\{Introduction\}(.*?)(\\section|\\end\{document\}|\\bibliography|\\appendix|$)', tex_content, flags=re.DOTALL)
+            if match:
+                intro = match.group(1)[:1000]
+                content_for_tags += f"\n\nIntroduction (excerpt): {intro}"
+
+        prompt = f"""Given the following research paper information, extract 5-8 key technical terms or concepts as tags. The tags should be in {llm.lang} and represent the main techniques, methods, datasets, or concepts discussed in the paper.
+
+{content_for_tags}
+
+Please return ONLY a Python list of strings (e.g., ['tag1', 'tag2', 'tag3']), without any additional explanation. Each tag should be concise (2-6 words)."""
+
+        # use gpt-4o tokenizer for estimation
+        enc = tiktoken.encoding_for_model("gpt-4o")
+        prompt_tokens = enc.encode(prompt)
+        prompt_tokens = prompt_tokens[:2000]  # 标签提取用更少的tokens
+        prompt = enc.decode(prompt_tokens)
+
+        try:
+            tags_response = llm.generate(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": f"You are an expert at extracting key technical terms from research papers. You always return results in {llm.lang}. You return ONLY a Python list format, nothing else.",
+                    },
+                    {"role": "user", "content": prompt},
+                ]
+            )
+
+            # 提取返回结果中的列表
+            tags_match = re.search(r'\[.*?\]', tags_response, flags=re.DOTALL)
+            if tags_match:
+                tags_list = eval(tags_match.group(0))
+                tags_list = [str(tag).strip() for tag in tags_list]
+                # 限制标签数量为5-8个
+                return tags_list[:8]
+            else:
+                logger.debug(f"Failed to extract tags from LLM response for {self.arxiv_id}")
+                return []
+        except Exception as e:
+            logger.debug(f"Failed to extract tags for {self.arxiv_id}: {e}")
+            return []
 
     @cached_property
     def affiliations(self) -> Optional[list[str]]:
