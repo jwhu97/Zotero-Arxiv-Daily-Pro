@@ -15,3 +15,23 @@ test.ipynb
 logs
 models
 test-compose.yml
+# ========================================
+# 敏感信息 - 绝不提交
+# ========================================
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+config.ini
+credentials.json
+
+# API Keys 和 Tokens
+*_api_key*
+*_token*
+*_secret*
+*password*
+
+# 临时配置文件
+local_config.*
