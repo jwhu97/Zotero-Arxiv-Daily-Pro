@@ -81,12 +81,12 @@ def get_arxiv_paper(query:str, debug:bool=False) -> list[ArxivPaper]:
         bar.close()
 
     else:
-        logger.debug("Retrieve 2 arxiv papers regardless of the date.")
+        logger.debug("Retrieve 5 arxiv papers regardless of the date.")
         search = arxiv.Search(query='cat:cs.AI', sort_by=arxiv.SortCriterion.SubmittedDate)
         papers = []
         for i in client.results(search):
             papers.append(ArxivPaper(i))
-            if len(papers) == 2:
+            if len(papers) == 5:
                 break
 
     return papers
@@ -182,9 +182,15 @@ if __name__ == '__main__':
     corpus = get_zotero_corpus(args.zotero_id, args.zotero_key)
     logger.info(f"Retrieved {len(corpus)} papers from Zotero.")
     if args.zotero_ignore:
-        logger.info(f"Ignoring papers in:\n {args.zotero_ignore}...")
-        corpus = filter_corpus(corpus, args.zotero_ignore)
-        logger.info(f"Remaining {len(corpus)} papers after filtering.")
+        # 过滤掉空行和注释行
+        ignore_rules = [line.strip() for line in args.zotero_ignore.split('\n')
+                       if line.strip() and not line.strip().startswith('#')]
+        if ignore_rules:
+            logger.info(f"Applying {len(ignore_rules)} ignore rule(s): {', '.join(ignore_rules[:3])}{'...' if len(ignore_rules) > 3 else ''}")
+            corpus = filter_corpus(corpus, args.zotero_ignore)
+            logger.info(f"Remaining {len(corpus)} papers after filtering.")
+        else:
+            logger.debug("ZOTERO_IGNORE is set but contains no valid rules (only comments/empty lines).")
     logger.info("Retrieving Arxiv papers...")
     papers = get_arxiv_paper(args.arxiv_query, args.debug)
     if len(papers) == 0:
