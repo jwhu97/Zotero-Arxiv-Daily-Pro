@@ -31,7 +31,7 @@ from loguru import logger
 from gitignore_parser import parse_gitignore
 from tempfile import mkstemp
 from paper import ArxivPaper
-from llm import set_global_llm
+from llm import set_global_llm, set_global_vision_llm
 import feedparser
 
 def get_zotero_corpus(id:str,key:str) -> list[dict]:
@@ -81,12 +81,12 @@ def get_arxiv_paper(query:str, debug:bool=False) -> list[ArxivPaper]:
         bar.close()
 
     else:
-        logger.debug("Retrieve 5 arxiv papers regardless of the date.")
+        logger.debug("Retrieve 2 arxiv papers regardless of the date.")
         search = arxiv.Search(query='cat:cs.AI', sort_by=arxiv.SortCriterion.SubmittedDate)
         papers = []
         for i in client.results(search):
             papers.append(ArxivPaper(i))
-            if len(papers) == 5:
+            if len(papers) == 2:
                 break
 
     return papers
@@ -159,6 +159,12 @@ if __name__ == '__main__':
         help="Language of TLDR",
         default="English",
     )
+    add_argument(
+        "--vision_model_name",
+        type=str,
+        help="Vision LLM Model Name (for architecture figure analysis)",
+        default="glm-4.1v-thinking-flash",
+    )
     parser.add_argument('--debug', action='store_true', help='Debug mode')
     args = parser.parse_args()
     assert (
@@ -193,9 +199,13 @@ if __name__ == '__main__':
         if args.use_llm_api:
             logger.info("Using OpenAI API as global LLM.")
             set_global_llm(api_key=args.openai_api_key, base_url=args.openai_api_base, model=args.model_name, lang=args.language)
+            # 设置vision LLM（用于架构图分析）
+            logger.info(f"Setting up vision LLM: {args.vision_model_name}")
+            set_global_vision_llm(api_key=args.openai_api_key, base_url=args.openai_api_base, model=args.vision_model_name, lang=args.language)
         else:
             logger.info("Using Local LLM as global LLM.")
             set_global_llm(lang=args.language)
+            logger.warning("Vision LLM requires API mode. Architecture figures will be skipped in local mode.")
 
     html = render_email(papers)
     logger.info("Sending email...")

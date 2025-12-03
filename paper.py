@@ -5,13 +5,17 @@ import arxiv
 import tarfile
 import re
 import time
-from llm import get_llm
+from llm import get_llm, get_vision_llm
 import requests
 from requests.adapters import HTTPAdapter, Retry
 from loguru import logger
 import tiktoken
 from contextlib import ExitStack
 from urllib.error import HTTPError
+import base64
+import io
+from PIL import Image
+import subprocess
 
 
 
@@ -399,3 +403,264 @@ Please return ONLY a Python list of strings (e.g., ['tag1', 'tag2', 'tag3']), wi
                 logger.debug(f"Failed to extract affiliations of {self.arxiv_id}: {e}")
                 return None
             return affiliations
+
+    @cached_property
+    def overview_figure(self) -> Optional[dict]:
+        """
+        提取论文的overview/architecture图片并生成描述
+        返回: {"image_base64": str, "caption": str, "description": str} 或 None
+        """
+        if self.tex is None:
+            logger.debug(f"No LaTeX source available for {self.arxiv_id}, skipping overview figure extraction.")
+            return None
+
+        with ExitStack() as stack:
+            try:
+                tmpdirname = stack.enter_context(TemporaryDirectory())
+
+                # 重新下载源文件以访问图片
+                try:
+                    file = self._paper.download_source(dirpath=tmpdirname)
+                except HTTPError as e:
+                    if e.code == 404:
+                        logger.debug(f"Source for {self.arxiv_id} not found (404).")
+                        return None
+                    else:
+                        logger.error(f"HTTP Error {e.code} when downloading source for {self.arxiv_id}: {e.reason}")
+                        return None
+                except Exception as e:
+                    logger.error(f"Error downloading source for {self.arxiv_id}: {e}")
+                    return None
+
+                try:
+                    tar = stack.enter_context(tarfile.open(file))
+                except tarfile.ReadError:
+                    logger.debug(f"Failed to open tar file for {self.arxiv_id}")
+                    return None
+
+                # 从LaTeX中找到包含关键词的figure
+                content = self.tex.get("all")
+                if content is None:
+                    content = "\n".join(self.tex.values())
+
+                # 匹配figure环境，查找包含关键词的caption
+                # 定义关键词优先级（分数越高优先级越高）
+                keyword_priorities = {
+                    "overview": 10,           # 最高优先级
+                    "architecture": 8,        # 架构图
+                    "framework": 8,           # 框架图
+                    "system": 6,              # 系统图
+                    "pipeline": 6,            # 流程图
+                    "proposed": 5,            # 提出的方法（常见）
+                    "method": 4,              # 方法图
+                    "approach": 4,            # 方案图
+                    "workflow": 3,            # 工作流
+                    "model": 2,               # 模型图（优先级较低，太泛）
+                }
+
+                figure_pattern = r'\\begin\{figure\*?\}(.*?)\\end\{figure\*?\}'
+                figures = re.findall(figure_pattern, content, flags=re.DOTALL | re.IGNORECASE)
+
+                # 收集所有匹配的figures及其优先级
+                matched_figures = []
+
+                for fig in figures:
+                    # 提取caption
+                    caption_match = re.search(r'\\caption\{(.*?)\}', fig, flags=re.DOTALL)
+                    if caption_match:
+                        caption = caption_match.group(1)
+                        # 计算这个figure的优先级（累加所有匹配关键词的分数）
+                        priority = 0
+                        matched_keywords = []
+                        for keyword, score in keyword_priorities.items():
+                            if keyword in caption.lower():
+                                priority += score
+                                matched_keywords.append(keyword)
+
+                        if priority > 0:  # 至少匹配了一个关键词
+                            matched_figures.append({
+                                'figure': fig,
+                                'caption': caption,
+                                'priority': priority,
+                                'keywords': matched_keywords
+                            })
+
+                if not matched_figures:
+                    # 降级策略：如果没有架构图，尝试找实验结果图
+                    logger.debug(f"No architecture figure found for {self.arxiv_id}, trying fallback to result figures")
+
+                    fallback_keywords = {
+                        "result": 3,
+                        "performance": 3,
+                        "comparison": 2,
+                        "evaluation": 2,
+                        "experiment": 2,
+                    }
+
+                    for fig in figures:
+                        caption_match = re.search(r'\\caption\{(.*?)\}', fig, flags=re.DOTALL)
+                        if caption_match:
+                            caption = caption_match.group(1)
+                            priority = 0
+                            matched_keywords = []
+                            for keyword, score in fallback_keywords.items():
+                                if keyword in caption.lower():
+                                    priority += score
+                                    matched_keywords.append(keyword)
+
+                            if priority > 0:
+                                matched_figures.append({
+                                    'figure': fig,
+                                    'caption': caption,
+                                    'priority': priority,
+                                    'keywords': matched_keywords,
+                                    'is_fallback': True  # 标记为降级图片
+                                })
+
+                if not matched_figures:
+                    logger.debug(f"No overview or result figure found in {self.arxiv_id}")
+                    return None
+
+                # 按优先级排序，取最高的
+                matched_figures.sort(key=lambda x: x['priority'], reverse=True)
+                best_match = matched_figures[0]
+                target_figure = best_match['figure']
+                target_caption = best_match['caption']
+
+                logger.debug(f"Selected figure for {self.arxiv_id} with priority {best_match['priority']} (keywords: {best_match['keywords']})")
+
+                # 提取图片文件名
+                image_patterns = [
+                    r'\\includegraphics(?:\[.*?\])?\{([^}]+)\}',
+                    r'\\includegraphics\[.*?\]\{([^}]+)\}'
+                ]
+
+                image_file = None
+                for pattern in image_patterns:
+                    match = re.search(pattern, target_figure)
+                    if match:
+                        image_file = match.group(1)
+                        break
+
+                if image_file is None:
+                    logger.debug(f"No image file found in target figure for {self.arxiv_id}")
+                    return None
+
+                # 清理文件名（移除路径、添加常见扩展名）
+                image_file = image_file.strip().replace('./', '')
+                logger.debug(f"Looking for image file: {image_file}")
+
+                # 列出tar中所有文件用于调试和模糊匹配
+                all_files = tar.getnames()
+                image_files_in_tar = [f for f in all_files if any(f.lower().endswith(ext) for ext in ['.png', '.pdf', '.jpg', '.jpeg', '.eps'])]
+                logger.debug(f"Available image files in tar: {image_files_in_tar[:10]}")  # 只显示前10个
+
+                # 尝试多种可能的路径和扩展名
+                possible_paths = []
+
+                # 1. 原始路径 + 各种扩展名
+                base_name = re.sub(r'\.\w+$', '', image_file)  # 移除现有扩展名
+                for ext in ['', '.png', '.pdf', '.jpg', '.jpeg', '.PNG', '.PDF', '.JPG']:
+                    possible_paths.append(base_name + ext if ext else image_file)
+
+                # 2. 只保留文件名（去掉所有路径）
+                filename_only = image_file.split('/')[-1]
+                base_filename = re.sub(r'\.\w+$', '', filename_only)
+                for ext in ['', '.png', '.pdf', '.jpg', '.jpeg', '.PNG', '.PDF', '.JPG']:
+                    possible_paths.append(base_filename + ext if ext else filename_only)
+
+                # 3. 模糊匹配：在tar中查找包含文件名的图片
+                for tar_file in image_files_in_tar:
+                    if base_filename.lower() in tar_file.lower():
+                        possible_paths.append(tar_file)
+
+                image_data = None
+                found_file = None
+
+                for try_filename in possible_paths:
+                    try:
+                        extracted_file = tar.extractfile(try_filename)
+                        if extracted_file:
+                            image_data = extracted_file.read()
+                            found_file = try_filename
+                            logger.debug(f"Successfully extracted {try_filename} for {self.arxiv_id}")
+                            break
+                    except KeyError:
+                        continue
+
+                if image_data is None:
+                    logger.warning(f"Image file {image_file} not found in tar for {self.arxiv_id}. Tried {len(possible_paths)} variations.")
+                    return None
+
+                # 如果是PDF，转换为PNG
+                if found_file and found_file.lower().endswith('.pdf'):
+                    try:
+                        # 保存PDF到临时文件
+                        pdf_path = f"{tmpdirname}/temp.pdf"
+                        with open(pdf_path, 'wb') as f:
+                            f.write(image_data)
+
+                        # 使用pdftoppm转换（如果可用）
+                        png_path = f"{tmpdirname}/temp.png"
+                        subprocess.run(['pdftoppm', '-png', '-singlefile', pdf_path, f"{tmpdirname}/temp"],
+                                      check=True, capture_output=True)
+
+                        with open(png_path, 'rb') as f:
+                            image_data = f.read()
+                    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                        logger.warning(f"Failed to convert PDF to PNG for {self.arxiv_id}: {e}. Skipping this figure.")
+                        return None
+
+                # 转换为base64
+                image_base64 = base64.b64encode(image_data).decode('utf-8')
+
+                # 使用vision LLM生成描述
+                vision_llm = get_vision_llm()
+                prompt = f"""Please analyze this figure from a research paper and provide a brief description (2-3 sentences) in {vision_llm.lang}.
+
+Focus on:
+1. The main components or modules shown
+2. The data/information flow
+3. The key technical approach
+
+Keep it concise and technical."""
+
+                # 检查是否禁用 Vision LLM（用于调试）
+                import os
+                skip_vision = os.getenv('SKIP_VISION_LLM', 'false').lower() == 'true'
+
+                if skip_vision:
+                    logger.warning(f"SKIP_VISION_LLM is enabled, skipping vision description for {self.arxiv_id}")
+                    description = target_caption  # 直接使用 caption
+                else:
+                    try:
+                        logger.debug(f"Calling Vision LLM for {self.arxiv_id}")
+                        description = vision_llm.generate_with_vision(prompt, image_base64)
+                        logger.debug(f"Vision LLM succeeded for {self.arxiv_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to generate vision description for {self.arxiv_id}: {e}")
+                        description = target_caption  # 回退到使用原始caption
+
+                # 清理caption（移除LaTeX命令）
+                # 清理 caption：移除 LaTeX 命令和引用
+                clean_caption = target_caption
+                # 移除引用命令（\cite{...}, \citep{...}, \citet{...} 等）
+                clean_caption = re.sub(r'\\cite[a-z]*\{[^}]*\}', '', clean_caption)
+                # 移除 ~ 符号（LaTeX 中的不间断空格）
+                clean_caption = re.sub(r'~', ' ', clean_caption)
+                # 移除其他 LaTeX 命令，保留内容
+                clean_caption = re.sub(r'\\[a-zA-Z]+\{([^}]*)\}', r'\1', clean_caption)
+                # 移除剩余的 LaTeX 命令
+                clean_caption = re.sub(r'\\[a-zA-Z]+', '', clean_caption)
+                # 清理多余空格
+                clean_caption = re.sub(r'\s+', ' ', clean_caption).strip()
+
+                return {
+                    "image_base64": image_base64,
+                    "caption": clean_caption,
+                    "description": description
+                }
+
+            except Exception as e:
+                logger.error(f"Unexpected error extracting overview figure for {self.arxiv_id}: {e}")
+                return None
