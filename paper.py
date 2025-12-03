@@ -16,7 +16,14 @@ import base64
 import io
 from PIL import Image
 import subprocess
+import os
 
+# 导入图片分析模块（可选，用于 mineru 模式）
+try:
+    from image_analyzer import get_image_analyzer
+except ImportError:
+    logger.debug("图片分析模块不可用，mineru 模式将被禁用")
+    get_image_analyzer = None
 
 
 class ArxivPaper:
@@ -664,3 +671,52 @@ Keep it concise and technical."""
             except Exception as e:
                 logger.error(f"Unexpected error extracting overview figure for {self.arxiv_id}: {e}")
                 return None
+
+    @cached_property
+    def key_images(self) -> Optional[dict]:
+        """
+        使用 MinerU + Qwen3-VL 提取论文的关键图片（多张）
+        仅在 IMAGE_EXTRACTION_MODE=mineru 时启用
+
+        Returns:
+            Optional[dict]: 关键图片信息，包含：
+                - images: 图片信息列表
+                - count: 图片数量
+                - total_extracted: 总提取图片数
+        """
+        if get_image_analyzer is None:
+            logger.debug("图片分析模块不可用，跳过 mineru 图片提取")
+            return None
+
+        # 检查环境变量
+        mineru_token = os.getenv('MINERU_TOKEN')
+        qwen_api_key = os.getenv('QWEN_API_KEY')
+
+        if not mineru_token or not qwen_api_key:
+            logger.debug("缺少MINERU_TOKEN或QWEN_API_KEY环境变量，跳过 mineru 图片提取")
+            return None
+
+        try:
+            logger.debug(f"开始提取论文 {self.arxiv_id} 的关键图片（mineru 模式，最多3张）")
+            analyzer = get_image_analyzer(mineru_token, qwen_api_key)
+
+            key_images_result = analyzer.extract_and_score_multiple_images(
+                pdf_url=self.pdf_url,
+                paper_title=self.title,
+                paper_abstract=self.summary,
+                max_images=10,  # 最多提取10张图片进行评分
+                top_k=3         # 返回最重要的3张图片
+            )
+
+            if key_images_result:
+                logger.debug(f"论文 {self.arxiv_id} 找到 {key_images_result['count']} 张关键图片")
+                for i, img in enumerate(key_images_result['images']):
+                    logger.debug(f"  第{i+1}张: {img['filename']}, 分数: {img['score']}")
+            else:
+                logger.debug(f"论文 {self.arxiv_id} 未找到满足条件的关键图片")
+
+            return key_images_result
+
+        except Exception as e:
+            logger.error(f"提取论文 {self.arxiv_id} 关键图片失败: {e}")
+            return None

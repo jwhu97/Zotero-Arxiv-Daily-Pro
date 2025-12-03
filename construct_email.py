@@ -209,15 +209,21 @@ def get_stars(score:float):
 
 
 def render_email(papers:list[ArxivPaper]):
+    import os
+
     parts = []
     if len(papers) == 0 :
         return framework.replace('__CONTENT__', get_empty_html())
-    
+
+    # 读取图片提取模式（默认为 vision_llm）
+    image_mode = os.getenv('IMAGE_EXTRACTION_MODE', 'vision_llm').lower()
+    logger.info(f"图片提取模式: {image_mode}")
+
     for p in tqdm(papers,desc='Rendering Email'):
         rate = get_stars(p.score)
         author_list = [a.name for a in p.authors]
         num_authors = len(author_list)
-        
+
         if num_authors <= 5:
             authors = ', '.join(author_list)
         else:
@@ -233,7 +239,25 @@ def render_email(papers:list[ArxivPaper]):
         affiliations = 'Unknown Affiliation'  # 临时跳过 LLM 提取
         code_url = p.code_url  # 从 abstract 中提取代码链接（GitHub/Hugging Face）
         tags = p.tags  # 从论文中提取关键技术词汇作为标签
-        overview_figure = p.overview_figure  # 提取论文的架构图及描述
+
+        # 根据模式选择图片提取方式
+        overview_figure = None
+        if image_mode == 'vision_llm':
+            # 默认模式：使用 Vision LLM 提取架构图
+            overview_figure = p.overview_figure
+        elif image_mode == 'mineru':
+            # MinerU 模式：使用 Qwen3-VL 评分的关键图片
+            key_images_result = p.key_images
+            if key_images_result and key_images_result.get('images'):
+                # 将第一张关键图片转换为 overview_figure 格式
+                first_image = key_images_result['images'][0]
+                overview_figure = {
+                    'image_base64': first_image.get('base64_data', ''),
+                    'caption': first_image.get('filename', 'Key Figure'),
+                    'description': first_image.get('description', '')
+                }
+                logger.info(f"使用 mineru 模式提取了 {key_images_result['count']} 张图片，显示第一张")
+
         parts.append(get_block_html(p.title, authors,rate,p.arxiv_id ,p.tldr, p.pdf_url, code_url, affiliations, tags, overview_figure))
         time.sleep(2)  # 临时改为 2 秒，加速测试（原来是 10 秒）
 
