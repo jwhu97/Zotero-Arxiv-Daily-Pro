@@ -215,11 +215,22 @@ def render_email(papers:list[ArxivPaper]):
     if len(papers) == 0 :
         return framework.replace('__CONTENT__', get_empty_html())
 
+    # 读取功能开关配置
+    enable_affiliations = os.getenv('ENABLE_AFFILIATIONS', 'true').lower() == 'true'
+    enable_code_url = os.getenv('ENABLE_CODE_URL', 'true').lower() == 'true'
+    enable_tags = os.getenv('ENABLE_TAGS', 'true').lower() == 'true'
+    enable_overview_figure = os.getenv('ENABLE_OVERVIEW_FIGURE', 'true').lower() == 'true'
+    detailed_info_limit = int(os.getenv('DETAILED_INFO_LIMIT', '-1'))
+    email_interval = int(os.getenv('EMAIL_INTERVAL', '10'))
+
     # 读取图片提取模式（默认为 vision_llm）
     image_mode = os.getenv('IMAGE_EXTRACTION_MODE', 'vision_llm').lower()
-    logger.info(f"图片提取模式: {image_mode}")
 
-    for p in tqdm(papers,desc='Rendering Email'):
+    logger.info(f"功能开关状态: affiliations={enable_affiliations}, code_url={enable_code_url}, "
+                f"tags={enable_tags}, overview_figure={enable_overview_figure}")
+    logger.info(f"图片提取模式: {image_mode}, 详细信息限制: {detailed_info_limit if detailed_info_limit > 0 else '无限制'}")
+
+    for idx, p in enumerate(tqdm(papers, desc='Rendering Email')):
         rate = get_stars(p.score)
         author_list = [a.name for a in p.authors]
         num_authors = len(author_list)
@@ -228,38 +239,50 @@ def render_email(papers:list[ArxivPaper]):
             authors = ', '.join(author_list)
         else:
             authors = ', '.join(author_list[:3] + ['...'] + author_list[-2:])
-        # 临时注释掉 affiliations 以加速测试
-        # if p.affiliations is not None:
-        #     affiliations = p.affiliations[:5]
-        #     affiliations = ', '.join(affiliations)
-        #     if len(p.affiliations) > 5:
-        #         affiliations += ', ...'
-        # else:
-        #     affiliations = 'Unknown Affiliation'
-        affiliations = 'Unknown Affiliation'  # 临时跳过 LLM 提取
-        code_url = p.code_url  # 从 abstract 中提取代码链接（GitHub/Hugging Face）
-        tags = p.tags  # 从论文中提取关键技术词汇作为标签
 
-        # 根据模式选择图片提取方式
+        # 判断是否在详细信息提取范围内（懒加载策略）
+        should_extract_details = (detailed_info_limit == -1) or (idx < detailed_info_limit)
+
+        # 提取作者单位信息（根据开关和懒加载策略）
+        affiliations = 'Unknown Affiliation'
+        if enable_affiliations and should_extract_details:
+            if p.affiliations is not None:
+                affiliations = p.affiliations[:5]
+                affiliations = ', '.join(affiliations)
+                if len(p.affiliations) > 5:
+                    affiliations += ', ...'
+
+        # 提取代码链接（根据开关）
+        code_url = None
+        if enable_code_url:
+            code_url = p.code_url
+
+        # 提取关键词标签（根据开关）
+        tags = None
+        if enable_tags:
+            tags = p.tags
+
+        # 根据模式和开关选择图片提取方式（根据懒加载策略）
         overview_figure = None
-        if image_mode == 'vision_llm':
-            # 默认模式：使用 Vision LLM 提取架构图
-            overview_figure = p.overview_figure
-        elif image_mode == 'mineru':
-            # MinerU 模式：使用 Qwen3-VL 评分的关键图片
-            key_images_result = p.key_images
-            if key_images_result and key_images_result.get('images'):
-                # 将第一张关键图片转换为 overview_figure 格式
-                first_image = key_images_result['images'][0]
-                overview_figure = {
-                    'image_base64': first_image.get('base64_data', ''),
-                    'caption': first_image.get('filename', 'Key Figure'),
-                    'description': first_image.get('description', '')
-                }
-                logger.info(f"使用 mineru 模式提取了 {key_images_result['count']} 张图片，显示第一张")
+        if enable_overview_figure and should_extract_details:
+            if image_mode == 'vision_llm':
+                # 默认模式：使用 Vision LLM 提取架构图
+                overview_figure = p.overview_figure
+            elif image_mode == 'mineru':
+                # MinerU 模式：使用 Qwen3-VL 评分的关键图片
+                key_images_result = p.key_images
+                if key_images_result and key_images_result.get('images'):
+                    # 将第一张关键图片转换为 overview_figure 格式
+                    first_image = key_images_result['images'][0]
+                    overview_figure = {
+                        'image_base64': first_image.get('base64_data', ''),
+                        'caption': first_image.get('filename', 'Key Figure'),
+                        'description': first_image.get('description', '')
+                    }
+                    logger.info(f"使用 mineru 模式提取了 {key_images_result['count']} 张图片，显示第一张")
 
         parts.append(get_block_html(p.title, authors,rate,p.arxiv_id ,p.tldr, p.pdf_url, code_url, affiliations, tags, overview_figure))
-        time.sleep(2)  # 临时改为 2 秒，加速测试（原来是 10 秒）
+        time.sleep(email_interval)  # 使用配置的间隔时间
 
     content = '<br>' + '</br><br>'.join(parts) + '</br>'
     return framework.replace('__CONTENT__', content)
