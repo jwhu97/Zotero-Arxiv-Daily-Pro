@@ -37,6 +37,16 @@
 
 **Zotero-arXiv-Daily-Pro** 是一个基于 GitHub Actions 的自动化学术论文推荐系统。它根据您的 Zotero 文献库内容，利用语义相似度算法从 arXiv 上筛选出与您研究方向最相关的新论文，并通过邮件发送每日推荐。
 
+### 效果展示
+
+<p align="center">
+  <img src="图片1.jpg" alt="Zotero学术日报助手展示" width="800"/>
+</p>
+
+**演示视频**
+
+观看完整演示视频了解系统功能: [Zotero学术日报小助手演示视频.mp4](Zotero学术日报小助手演示视频.mp4)
+
 ### 工作原理
 
 1. **文献分析**：从 Zotero API 获取您的个人文献库
@@ -94,6 +104,20 @@
 - 星级相关度评分（0-5 星）
 - 直达链接：arXiv 页面、PDF 下载、源码仓库
 - 嵌入关键图表和 TLDR
+
+**邮件效果示例**
+
+<p align="center">
+  <img src="邮件内容.jpg" alt="PC端邮件展示效果" width="700"/>
+  <br/>
+  <em>PC端邮件展示效果</em>
+</p>
+
+<p align="center">
+  <img src="手机端.jpg" alt="手机端邮件展示效果" width="350"/>
+  <br/>
+  <em>手机端邮件展示效果</em>
+</p>
 
 ### 🔧 灵活的过滤规则
 
